@@ -1,0 +1,547 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template deployed in Shared account across multiple regions
+
+Parameters:
+  OrganizationId:
+    Type: String
+    Description: Organization ID
+    AllowedPattern: "^o-[a-z0-9]{10,32}$"
+  ManagementAccountId:
+    Type: String
+    Description: Management AWS Account ID
+    AllowedPattern: "^[0-9]{12}"
+
+Conditions:
+  NorthernVirginiaRegion: !Equals [!Ref "AWS::Region", "us-east-1"]
+
+Resources:
+
+  ArtifactKey:
+    Type: "AWS::KMS::Key"
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      Description: Smoke Turner Artifact Key
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Enable IAM policies
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: Allow access for Key Administrators
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action:
+              - "kms:Create*"
+              - "kms:Describe*"
+              - "kms:Enable*"
+              - "kms:List*"
+              - "kms:Put*"
+              - "kms:Update*"
+              - "kms:Revoke*"
+              - "kms:Disable*"
+              - "kms:Get*"
+              - "kms:Delete*"
+              - "kms:TagResource"
+              - "kms:UntagResource"
+              - "kms:ScheduleKeyDeletion"
+              - "kms:CancelKeyDeletion"
+            Resource: "*"
+          - Sid: Allow use of the key by S3
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Resource: "*"
+            Condition:
+              StringEquals:
+                "kms:CallerAccount": !Ref "AWS::AccountId"
+                "kms:ViaService": !Sub "s3.${AWS::Region}.amazonaws.com"
+          - Sid: Allow decryption of the key by organization
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: "kms:Decrypt"
+            Resource: "*"
+            Condition:
+              StringEquals:
+                "aws:PrincipalOrgID": !Ref OrganizationId
+      KeyUsage: ENCRYPT_DECRYPT
+      PendingWindowInDays: 7
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+
+  ArtifactAlias:
+    Type: "AWS::KMS::Alias"
+    Properties:
+      AliasName: "alias/smoketurner/artifact"
+      TargetKeyId: !Ref ArtifactKey
+
+  ArtifactBucket:
+    Type: "AWS::S3::Bucket"
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Ref ArtifactKey
+              SSEAlgorithm: "aws:kms"
+      BucketName: !Sub "artifacts-${AWS::AccountId}-${AWS::Region}"
+      LifecycleConfiguration:
+        Rules:
+          - AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+            ExpirationInDays: 3
+            #ExpiredObjectDeleteMarker: true
+            Id: RetentionRule
+            NoncurrentVersionExpirationInDays: 3
+            Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+      VersioningConfiguration:
+        Status: Enabled
+
+  ArtifactBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyBucketDeletion
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:DeleteBucket"
+            Resource: !GetAtt ArtifactBucket.Arn
+          - Sid: DenyInsecureConnections
+            Principal: "*"
+            Effect: Deny
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub "${ArtifactBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+          - Sid: DenyUnEncryptedObjectUploads
+            Principal: "*"
+            Effect: Deny
+            Action: "s3:PutObject"
+            Resource: !Sub "${ArtifactBucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                "s3:x-amz-server-side-encryption": "aws:kms"
+          - Sid: DenyIncorrectEncryptionHeader
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:PutObject"
+            Resource: !Sub "${ArtifactBucket.Arn}/*"
+            Condition:
+              StringNotEquals:
+                "s3:x-amz-server-side-encryption-aws-kms-key-id": !GetAtt ArtifactKey.Arn
+          - !If
+            - NorthernVirginiaRegion
+            - Sid: AllowManagementAccount
+              Effect: Allow
+              Principal:
+                AWS: !Ref ManagementAccountId
+              Action:
+                - "s3:GetObject"
+                - "s3:GetObjectVersion"
+              Resource: !Sub "${ArtifactBucket.Arn}/*"
+            - !Ref "AWS::NoValue"
+
+  GitHub:
+    Type: "AWS::CodeStarConnections::Connection"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      ConnectionName: GitHub
+      ProviderType: GitHub
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+
+  CodePipelineRole:
+    Type: "AWS::IAM::Role"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "codepipeline.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Description: !Sub "DO NOT DELETE - Used by CodePipeline. Created by CloudFormation ${AWS::StackId}"
+      Path: "/smoketurner/"
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "codestar-connections:UseConnection"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "codebuild:BatchGetBuilds"
+                  - "codebuild:StartBuild"
+                Resource: !Sub "arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/*"
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:PutObject"
+                  - "s3:PutObjectAcl"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::artifacts-${AWS::AccountId}-*/*"
+              - Effect: Allow
+                Action:
+                  - "s3:GetBucketAcl"
+                  - "s3:GetBucketLocation"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::artifacts-${AWS::AccountId}-*"
+              - Effect: Allow
+                Action:
+                  - "kms:Encrypt"
+                  - "kms:Decrypt"
+                Resource: !Sub "arn:${AWS::Partition}:kms:*:${AWS::AccountId}:key/*"
+              - Effect: Allow
+                Action:
+                  - "cloudformation:CreateStack"
+                  - "cloudformation:DescribeStacks"
+                  - "cloudformation:UpdateStack"
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/*"
+                Condition:
+                  ArnEquals:
+                    "cloudformation:RoleArn": !GetAtt CloudFormationRole.Arn
+              - Effect: Allow
+                Action: "iam:PassRole"
+                Resource: !GetAtt CloudFormationRole.Arn
+              - Effect: Allow
+                Action: "sts:AssumeRole"
+                Resource: !Sub "arn:${AWS::Partition}:iam::${ManagementAccountId}:role/smoketurner/DeploymentRole"
+      RoleName: CodePipelineRole
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+        - Key: "aws-cloudformation:stack-name"
+          Value: !Ref "AWS::StackName"
+        - Key: "aws-cloudformation:stack-id"
+          Value: !Ref "AWS::StackId"
+        - Key: "aws-cloudformation:logical-id"
+          Value: CodePipelineRole
+
+  CodeBuildRole:
+    Type: "AWS::IAM::Role"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "codebuild.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Description: !Sub "DO NOT DELETE - Used by CodeBuild. Created by CloudFormation ${AWS::StackId}"
+      Path: "/smoketurner/"
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetObjectTagging"
+                  - "s3:PutObject"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::artifacts-${AWS::AccountId}-*/*"
+              - Effect: Allow
+                Action:
+                  - "s3:GetBucketAcl"
+                  - "s3:GetBucketLocation"
+                  - "s3:ListBucket"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::artifacts-${AWS::AccountId}-*"
+              - Effect: Allow
+                Action: "signer:StartSigningJob"
+                Resource: !Ref SigningProfile
+              - Effect: Allow
+                Action: "signer:DescribeSigningJob"
+                Resource: !Sub "arn:${AWS::Partition}:signer:*:${AWS::AccountId}:/signing-jobs/*"
+              - Effect: Allow
+                Action: "kms:Encrypt"
+                Resource: !Sub "arn:${AWS::Partition}:kms:*:${AWS::AccountId}:key/*"
+              - Effect: Allow
+                Action: "iam:ListPolicies" # required by AWS SAM
+                Resource: "*"
+              - Effect: Allow
+                Action: "ssm:GetParameters"
+                Resource: !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/SmokeTurner/*"
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/codebuild/*"
+      RoleName: CodeBuildRole
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+        - Key: "aws-cloudformation:stack-name"
+          Value: !Ref "AWS::StackName"
+        - Key: "aws-cloudformation:stack-id"
+          Value: !Ref "AWS::StackId"
+        - Key: "aws-cloudformation:logical-id"
+          Value: CodeBuildRole
+
+  CloudFormationRole:
+    Type: "AWS::IAM::Role"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "cloudformation.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Description: !Sub "DO NOT DELETE - Used by CloudFormation. Created by CloudFormation ${AWS::StackId}"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess"
+      Path: "/smoketurner/"
+      RoleName: CloudFormationRole
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+        - Key: "aws-cloudformation:stack-name"
+          Value: !Ref "AWS::StackName"
+        - Key: "aws-cloudformation:stack-id"
+          Value: !Ref "AWS::StackId"
+        - Key: "aws-cloudformation:logical-id"
+          Value: CloudFormationRole
+
+  LambdaPermissionRole:
+    Type: "AWS::IAM::Role"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            AWS: "*"
+          Action: "sts:AssumeRole"
+          Condition:
+            StringEquals:
+              "aws:PrincipalOrgID": !Ref OrganizationId
+      Description: !Sub "DO NOT DELETE - Used by CloudFormation. Created by CloudFormation ${AWS::StackId}"
+      Path: "/smoketurner/"
+      Policies:
+        - PolicyName: LambdaPermissionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "lambda:AddPermission"
+                  - "lambda:RemovePermission"
+                Resource: !Sub "arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:function:*"
+      RoleName: LambdaPermissionRole
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+        - Key: "aws-cloudformation:stack-name"
+          Value: !Ref "AWS::StackName"
+        - Key: "aws-cloudformation:stack-id"
+          Value: !Ref "AWS::StackId"
+        - Key: "aws-cloudformation:logical-id"
+          Value: LambdaPermissionRole
+
+  SigningProfile:
+    Type: "AWS::Signer::SigningProfile"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      PlatformId: AWSLambda-SHA384-ECDSA
+      SignatureValidityPeriod:
+        Type: MONTHS
+        Value: 135
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+
+  CodeSigningConfig:
+    Type: "AWS::Lambda::CodeSigningConfig"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      Description: Smoke Turner Code Signing
+      AllowedPublishers:
+        SigningProfileVersionArns:
+          - !GetAtt SigningProfile.ProfileVersionArn
+      CodeSigningPolicies:
+        UntrustedArtifactOnDeployment: Enforce
+
+  SigningProfileParameter:
+    Type: "AWS::SSM::Parameter"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      Description: Signing Profile
+      Name: "/SmokeTurner/Lambda/SigningProfile"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !Select [2, !Split ["/", !Ref SigningProfile]]
+
+  CodeSigningConfigArnParameter:
+    Type: "AWS::SSM::Parameter"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      Description: Code Signing Config ARN
+      Name: "/SmokeTurner/Lambda/CodeSigningConfigArn"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !Ref CodeSigningConfig
+
+  ArtifactKeyParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Description: "Artifact KMS Key ID"
+      Name: "/SmokeTurner/KMS/ArtifactKeyId"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !Ref ArtifactKey
+
+  ArtifactKeyArnParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Description: "Artifact KMS Key Arn"
+      Name: "/SmokeTurner/KMS/ArtifactKeyArn"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !GetAtt ArtifactKey.Arn
+
+  ArtifactBucketArnParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Description: "Artifact S3 Bucket ARN"
+      Name: "/SmokeTurner/S3/ArtifactBucketArn"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !GetAtt ArtifactBucket.Arn
+
+  ArtifactBucketNameParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Description: "Artifact S3 Bucket Name"
+      Name: "/SmokeTurner/S3/ArtifactBucketName"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !Ref ArtifactBucket
+
+  GitHubConnectionArnParameter:
+    Type: "AWS::SSM::Parameter"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      Description: "GitHub Connection ARN"
+      Name: "/SmokeTurner/CodeStar/GitHubConnectionArn"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !Ref GitHub
+
+  OrganizationIdParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Description: "Smoke Turner Organization ID"
+      Name: "/SmokeTurner/OrganizationId"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !Ref OrganizationId
+
+Outputs:
+  ArtifactBucketName:
+    Description: Artifact S3 Bucket Name
+    Value: !Ref ArtifactBucket
+  ArtifactBucketArn:
+    Description: Artifact S3 Bucket ARN
+    Value: !GetAtt ArtifactBucket.Arn
+  ArtifactBucketRegion:
+    Description: Artifact S3 Bucket Region
+    Value: !Ref "AWS::Region"
+  ArtifactKeyId:
+    Description: Artifact KMS Key ID
+    Value: !Ref ArtifactKey
+  ArtifactKeyArn:
+    Description: Artifact KMS Key ARN
+    Value: !GetAtt ArtifactKey.Arn
+  ArtifactAliasArn:
+    Description: Artifact KMS Alias ARN
+    Value: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:${ArtifactAlias}"
+  CodePipelineRoleArn:
+    Description: CodePipeline IAM Role ARN
+    Value: !GetAtt CodePipelineRole.Arn
+    Condition: NorthernVirginiaRegion
+  CodeBuildRoleArn:
+    Description: CodeBuild IAM Role ARN
+    Value: !GetAtt CodeBuildRole.Arn
+    Condition: NorthernVirginiaRegion

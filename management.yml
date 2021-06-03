@@ -1,0 +1,104 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template deployed in Shared account across multiple regions
+
+Parameters:
+  SharedAccountId:
+    Type: String
+    Description: Shared AWS Account ID
+    AllowedPattern: "^[0-9]{12}"
+  ArtifactBucket:
+    Type: String
+    Description: Artifact S3 Bucket Name
+  ArtifactKeyArn:
+    Type: String
+    Description: Artifact KMS Key ARN
+
+Conditions:
+  NorthernVirginiaRegion: !Equals [!Ref "AWS::Region", "us-east-1"]
+
+Resources:
+
+  DeploymentRole:
+    Type: "AWS::IAM::Role"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${SharedAccountId}:role/smoketurner/CodePipelineRole"
+            Action: "sts:AssumeRole"
+      Description: !Sub "DO NOT DELETE - Used by CodePipeline. Created by CloudFormation ${AWS::StackId}"
+      Path: "/smoketurner/"
+      Policies:
+        - PolicyName: DeploymentPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/*"
+              - Effect: Allow
+                Action:
+                  - "s3:GetBucketAcl"
+                  - "s3:GetBucketLocation"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}"
+              - Effect: Allow
+                Action: "kms:Decrypt"
+                Resource: !Ref ArtifactKeyArn
+              - Effect: Allow
+                Action:
+                  - "cloudformation:CreateStack"
+                  - "cloudformation:DescribeStacks"
+                  - "cloudformation:UpdateStack"
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*"
+                Condition:
+                  ArnEquals:
+                    "cloudformation:RoleArn": !GetAtt CloudFormationRole.Arn
+              - Effect: Allow
+                Action: "iam:PassRole"
+                Resource: !GetAtt CloudFormationRole.Arn
+      RoleName: DeploymentRole
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+        - Key: "aws-cloudformation:stack-name"
+          Value: !Ref "AWS::StackName"
+        - Key: "aws-cloudformation:stack-id"
+          Value: !Ref "AWS::StackId"
+        - Key: "aws-cloudformation:logical-id"
+          Value: DeploymentRole
+
+  CloudFormationRole:
+    Type: "AWS::IAM::Role"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "cloudformation.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Description: !Sub "DO NOT DELETE - Used by CloudFormation. Created by CloudFormation ${AWS::StackId}"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess"
+      Path: "/smoketurner/"
+      RoleName: CloudFormationRole
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+        - Key: "aws-cloudformation:stack-name"
+          Value: !Ref "AWS::StackName"
+        - Key: "aws-cloudformation:stack-id"
+          Value: !Ref "AWS::StackId"
+        - Key: "aws-cloudformation:logical-id"
+          Value: CloudFormationRole

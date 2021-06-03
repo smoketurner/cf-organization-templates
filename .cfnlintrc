@@ -1,0 +1,6 @@
+templates:
+- macros.yml
+- management.yml
+- shared.yml
+include_checks:
+- I

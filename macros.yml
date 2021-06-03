@@ -1,0 +1,142 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation StackSet Template deployed in Shared account
+
+Parameters:
+  SharedAccountId:
+    Type: String
+    Description: Shared AWS Account ID
+    AllowedPattern: "^[0-9]{12}"
+
+Resources:
+  LambdaPermissionFunctionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: "lambda.amazonaws.com"
+          Action: "sts:AssumeRole"
+      Description: !Sub "DO NOT DELETE - Used by Lambda. Created by CloudFormation ${AWS::StackId}"
+      Path: "/smoketurner/"
+      Policies:
+        - PolicyName: LambdaPermissionFunctionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "sts:AssumeRole"
+                Resource: !Sub "arn:${AWS::Partition}:iam::${SharedAccountId}:role/smoketurner/LambdaPermissionRole"
+      Tags:
+        - Key: Owner
+          Value: Smoke Turner
+        - Key: Environment
+          Value: PROD
+        - Key: "aws-cloudformation:stack-name"
+          Value: !Ref "AWS::StackName"
+        - Key: "aws-cloudformation:stack-id"
+          Value: !Ref "AWS::StackId"
+        - Key: "aws-cloudformation:logical-id"
+          Value: LambdaPermissionFunctionRole
+
+  LambdaPermissionFunctionLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${LambdaPermissionFunction}"
+      RetentionInDays: 3
+
+  CloudWatchLogsPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: CloudWatchLogs
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource: !GetAtt LambdaPermissionFunctionLogGroup.Arn
+      Roles:
+        - !Ref LambdaPermissionFunctionRole
+
+  LambdaPermissionFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        ZipFile: |-
+          #!/usr/bin/env python
+          # -*- coding: utf-8 -*-
+
+          import os
+          import boto3
+          import botocore
+          import cfnresponse
+
+          ASSUME_ROLE_ARN = os.environ["ASSUME_ROLE_ARN"]
+          ACCOUNT_ID = os.environ["ACCOUNT_ID"]
+          sts = boto3.client("sts")
+          physical_id = "LambdaPermission"
+
+
+          def handler(event, context):
+              function_arn = event["ResourceProperties"]["FunctionArn"]
+              statement_id = f"Account{ACCOUNT_ID}"
+              status = cfnresponse.SUCCESS
+
+              try:
+                  credentials = sts.assume_role(
+                      RoleArn=ASSUME_ROLE_ARN, RoleSessionName="lambda-permission"
+                  )["Credentials"]
+
+                  client = boto3.client(
+                      "lambda",
+                      aws_access_key_id=credentials["AccessKeyId"],
+                      aws_secret_access_key=credentials["SecretAccessKey"],
+                      aws_session_token=credentials["SessionToken"],
+                  )
+                  if event["RequestType"] == "Delete":
+                      client.remove_permission(
+                          FunctionName=function_arn, StatementId=statement_id
+                      )
+                  else:
+                      client.add_permission(
+                          FunctionName=function_arn,
+                          StatementId=statement_id,
+                          Action="lambda:InvokeFunction",
+                          Principal=ACCOUNT_ID,
+                      )
+              except botocore.exceptions.ClientError as error:
+                  print(str(error))
+                  status = cfnresponse.FAILED
+              finally:
+                  cfnresponse.send(event, context, status, {}, physical_id)
+      Description: DO NOT DELETE - Smoke Turner - Lambda Permission Custom Resource
+      Environment:
+        Variables:
+          ASSUME_ROLE_ARN: !Sub "arn:${AWS::Partition}:iam::${SharedAccountId}:role/smoketurner/LambdaPermissionRole"
+          ACCOUNT_ID: !Ref "AWS::AccountId"
+      Handler: index.handler
+      MemorySize: 128
+      Timeout: 5
+      Role: !GetAtt LambdaPermissionFunctionRole.Arn
+      Runtime: python3.8
+
+  LambdaPermission:
+    Type: "Custom::LambdaPermission"
+    DependsOn: CloudWatchLogsPolicy
+    Properties:
+      ServiceToken: !GetAtt LambdaPermissionFunction.Arn
+      FunctionArn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${SharedAccountId}:function:LatestLayerFunction"
+
+  LatestLayerMacro:
+    Type: "AWS::CloudFormation::Macro"
+    DependsOn: LambdaPermission
+    Properties:
+      Description: DO NOT DELETE - Smoke Turner - LatestLayer Macro
+      FunctionName: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${SharedAccountId}:function:LatestLayerFunction"
+      Name: LatestLayer
