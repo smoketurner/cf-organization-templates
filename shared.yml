@@ -219,12 +219,14 @@ Resources:
               - Effect: Allow
                 Action:
                   - "cloudformation:CreateStack"
-                  - "cloudformation:DescribeStacks"
                   - "cloudformation:UpdateStack"
                 Resource: !Sub "arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/*"
                 Condition:
                   ArnEquals:
                     "cloudformation:RoleArn": !GetAtt CloudFormationRole.Arn
+              - Effect: Allow
+                Action: "cloudformation:DescribeStacks"
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/*"
               - Effect: Allow
                 Action: "iam:PassRole"
                 Resource: !GetAtt CloudFormationRole.Arn
@@ -274,7 +276,7 @@ Resources:
                 Resource: !Sub "arn:${AWS::Partition}:s3:::artifacts-${AWS::AccountId}-*"
               - Effect: Allow
                 Action: "signer:StartSigningJob"
-                Resource: !Ref SigningProfile
+                Resource: !Sub "arn:${AWS::Partition}:signer:*:${AWS::AccountId}:/signing-profiles/*"
               - Effect: Allow
                 Action: "signer:DescribeSigningJob"
                 Resource: !Sub "arn:${AWS::Partition}:signer:*:${AWS::AccountId}:/signing-jobs/*"
@@ -374,7 +376,6 @@ Resources:
 
   SigningProfile:
     Type: "AWS::Signer::SigningProfile"
-    Condition: NorthernVirginiaRegion
     Properties:
       PlatformId: AWSLambda-SHA384-ECDSA
       SignatureValidityPeriod:
@@ -388,7 +389,6 @@ Resources:
 
   CodeSigningConfig:
     Type: "AWS::Lambda::CodeSigningConfig"
-    Condition: NorthernVirginiaRegion
     Properties:
       Description: Smoke Turner Code Signing
       AllowedPublishers:
@@ -399,7 +399,6 @@ Resources:
 
   SigningProfileParameter:
     Type: "AWS::SSM::Parameter"
-    Condition: NorthernVirginiaRegion
     Properties:
       Description: Signing Profile
       Name: "/SmokeTurner/Lambda/SigningProfile"
@@ -412,7 +411,6 @@ Resources:
 
   CodeSigningConfigArnParameter:
     Type: "AWS::SSM::Parameter"
-    Condition: NorthernVirginiaRegion
     Properties:
       Description: Code Signing Config ARN
       Name: "/SmokeTurner/Lambda/CodeSigningConfigArn"

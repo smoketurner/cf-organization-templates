@@ -13,6 +13,9 @@ Parameters:
   ArtifactKeyArn:
     Type: String
     Description: Artifact KMS Key ARN
+  SigningProfileVersionArn:
+    Type: String
+    Description: Signing Profile Version ARN
 
 Conditions:
   NorthernVirginiaRegion: !Equals [!Ref "AWS::Region", "us-east-1"]
@@ -53,12 +56,14 @@ Resources:
               - Effect: Allow
                 Action:
                   - "cloudformation:CreateStack"
-                  - "cloudformation:DescribeStacks"
                   - "cloudformation:UpdateStack"
                 Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*"
                 Condition:
                   ArnEquals:
                     "cloudformation:RoleArn": !GetAtt CloudFormationRole.Arn
+              - Effect: Allow
+                Action: "cloudformation:DescribeStacks"
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*"
               - Effect: Allow
                 Action: "iam:PassRole"
                 Resource: !GetAtt CloudFormationRole.Arn
@@ -102,3 +107,25 @@ Resources:
           Value: !Ref "AWS::StackId"
         - Key: "aws-cloudformation:logical-id"
           Value: CloudFormationRole
+
+  CodeSigningConfig:
+    Type: "AWS::Lambda::CodeSigningConfig"
+    Properties:
+      Description: Smoke Turner Code Signing
+      AllowedPublishers:
+        SigningProfileVersionArns:
+          - !Ref SigningProfileVersionArn
+      CodeSigningPolicies:
+        UntrustedArtifactOnDeployment: Enforce
+
+  CodeSigningConfigArnParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Description: Code Signing Config ARN
+      Name: "/SmokeTurner/Lambda/CodeSigningConfigArn"
+      Tags:
+        Owner: Smoke Turner
+        Environment: PROD
+      Tier: Standard
+      Type: String
+      Value: !Ref CodeSigningConfig
