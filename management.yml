@@ -1,6 +1,6 @@
 ---
 AWSTemplateFormatVersion: "2010-09-09"
-Description: CloudFormation template deployed in Shared account across multiple regions
+Description: Deployment Template - Management Account - Primary Region
 
 Parameters:
   SharedAccountId:
@@ -89,7 +89,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: "cloudformation.amazonaws.com"
+              Service: !Sub "cloudformation.${AWS::URLSuffix}"
             Action: "sts:AssumeRole"
       Description: !Sub "DO NOT DELETE - Used by CloudFormation. Created by CloudFormation ${AWS::StackId}"
       ManagedPolicyArns:

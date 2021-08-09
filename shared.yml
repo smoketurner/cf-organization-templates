@@ -1,6 +1,6 @@
 ---
 AWSTemplateFormatVersion: "2010-09-09"
-Description: CloudFormation template deployed in Shared account across multiple regions
+Description: Dev Tools Resources - Shared Account - Multi-region
 
 Parameters:
   OrganizationId:
@@ -114,6 +114,15 @@ Resources:
             Id: RetentionRule
             NoncurrentVersionExpirationInDays: 3
             Status: Enabled
+          - Id: TransitionRule
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+              - StorageClass: DEEP_ARCHIVE
+                TransitionInDays: 180
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerPreferred
@@ -185,7 +194,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: "codepipeline.amazonaws.com"
+              Service: !Sub "codepipeline.${AWS::URLSuffix}"
             Action: "sts:AssumeRole"
       Description: !Sub "DO NOT DELETE - Used by CodePipeline. Created by CloudFormation ${AWS::StackId}"
       Path: "/smoketurner/"
@@ -255,7 +264,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: "codebuild.amazonaws.com"
+              Service: !Sub "codebuild.${AWS::URLSuffix}"
             Action: "sts:AssumeRole"
       Description: !Sub "DO NOT DELETE - Used by CodeBuild. Created by CloudFormation ${AWS::StackId}"
       Path: "/smoketurner/"
@@ -316,7 +325,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: "cloudformation.amazonaws.com"
+              Service: !Sub "cloudformation.${AWS::URLSuffix}"
             Action: "sts:AssumeRole"
       Description: !Sub "DO NOT DELETE - Used by CloudFormation. Created by CloudFormation ${AWS::StackId}"
       ManagedPolicyArns:

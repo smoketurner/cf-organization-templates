@@ -1,0 +1,31 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Macros Template - All Accounts - Multi-region
+
+Conditions:
+  NorthernVirginiaRegion: !Equals [!Ref "AWS::Region", "us-east-1"]
+
+Resources:
+  Route53LogPolicy:
+    Type: "AWS::Logs::ResourcePolicy"
+    Condition: NorthernVirginiaRegion
+    Properties:
+      PolicyName: AWSServiceRoleForRoute53
+      PolicyDocument: !Sub |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Route53LogsToCloudWatchLogs",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "route53.${AWS::URLSuffix}"
+              },
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/route53/*"
+            }
+          ]
+        }
